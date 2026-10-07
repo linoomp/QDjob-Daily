@@ -1,179 +1,227 @@
 name: QDjob Daily
 
-# ============================================================
-# 配置 - 直接修改此处即可
-# ============================================================
-env:
-  QDJOB_REPO:        qdjob/QDjob  # 发布主仓库不用改
-  QDJOB_ASSET:       QDjob_linux_amd64.zip  # 引用资源的名称不用更改
-  DATA_REPO:         2061360308/QDjob-Data  # 修改为你自己的数据仓库，确保仓库存在且有写入权限
-  GIT_USER:          github-actions[bot]  # 修改为你自己的 GitHub 用户名或保留默认
-  GIT_EMAIL:         github-actions[bot]@users.noreply.github.com  # 修改为你自己的 GitHub 邮箱或保留默认
-
 on:
   schedule:
     - cron: '30 0 * * *'
   workflow_dispatch:
+    inputs:
+      validate_only:
+        description: '仅检查私有仓库和账号配置，不执行起点任务'
+        type: boolean
+        default: true
+
+env:
+  QDJOB_REPO: qdjob/QDjob
+  QDJOB_ASSET: QDjob_linux_amd64.zip
+  DATA_REPO: linoomp/QDjob-Data
+  TZ: Asia/Shanghai
+  GIT_USER: github-actions[bot]
+  GIT_EMAIL: github-actions[bot]@users.noreply.github.com
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: qdjob-daily
+  cancel-in-progress: false
 
 jobs:
   run:
     runs-on: ubuntu-latest
-
+    timeout-minutes: 45
     steps:
-      # ============================================================
-      # Phase 1 — 自动更新
-      # ============================================================
-
-      - name: Random delay (0-5 minutes)
-        if: github.event_name == 'schedule'
-        run: |
-          DELAY=$((RANDOM % 300))
-          echo "Sleeping for ${DELAY} seconds"
-          sleep ${DELAY}
-
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Get latest release and check version
-        id: release
-        run: |
-          RESPONSE=$(curl -sL "https://api.github.com/repos/${{ env.QDJOB_REPO }}/releases/latest")
-          TAG=$(echo "$RESPONSE" | jq -r '.tag_name // empty')
-          if [ -z "$TAG" ] || [ "$TAG" = "null" ]; then
-            echo "valid=false" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-          DOWNLOAD_URL=$(echo "$RESPONSE" | jq -r --arg name "${{ env.QDJOB_ASSET }}" '.assets[] | select(.name==$name) | .browser_download_url')
-          if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "null" ]; then
-            echo "valid=false" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-          echo "valid=true" >> $GITHUB_OUTPUT
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
-          echo "download_url=$DOWNLOAD_URL" >> $GITHUB_OUTPUT
-
-          CURRENT=$(cat .qdjob_version 2>/dev/null | tr -d '[:space:]' || echo "none")
-          if [ "$CURRENT" = "$TAG" ] && git ls-remote --heads origin "$TAG" | grep -q "$TAG"; then
-            echo "need_download=false" >> $GITHUB_OUTPUT
-          else
-            echo "need_download=true" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Download QDjob from release (new version)
-        if: steps.release.outputs.need_download == 'true'
-        run: |
-          curl -sL -o /tmp/qdjob.zip "${{ steps.release.outputs.download_url }}"
-          rm -rf /tmp/qdjob
-          unzip -o /tmp/qdjob.zip -d /tmp/qdjob
-          chmod +x /tmp/qdjob/QDjob
-
-      - name: Fetch QDjob from version branch (existing version)
-        if: steps.release.outputs.need_download == 'false' && steps.release.outputs.valid == 'true'
-        run: |
-          VERSION=$(cat .qdjob_version | tr -d '[:space:]')
-          if git ls-remote --heads origin "$VERSION" | grep -q "$VERSION"; then
-            git fetch origin "$VERSION"
-            rm -rf /tmp/qdjob
-            mkdir -p /tmp/qdjob
-            git archive "origin/$VERSION" | tar -x -C /tmp/qdjob/
-            chmod +x /tmp/qdjob/QDjob
-          else
-            echo "Version branch $VERSION not found, downloading from release"
-            curl -sL -o /tmp/qdjob.zip "${{ steps.release.outputs.download_url }}"
-            rm -rf /tmp/qdjob
-            unzip -o /tmp/qdjob.zip -d /tmp/qdjob
-            chmod +x /tmp/qdjob/QDjob
-          fi
-
-      - name: Create version branch and commit QDjob
-        if: steps.release.outputs.need_download == 'true'
-        run: |
-          git checkout --orphan "${{ steps.release.outputs.tag }}"
-          git rm -rf .
-          cp -r /tmp/qdjob/* ./
-          git config user.name "${{ env.GIT_USER }}"
-          git config user.email "${{ env.GIT_EMAIL }}"
-          git add .
-          git commit -m "QDjob ${{ steps.release.outputs.tag }}"
-          git push origin "${{ steps.release.outputs.tag }}" --force
-
-      - name: Cleanup old version branches (keep latest 5)
-        if: steps.release.outputs.need_download == 'true'
-        run: |
-          git fetch --prune
-          OLD=$(git branch -r --list 'origin/QDjob_v*' | sed 's|origin/||' | sort -V | head -n -5)
-          if [ -n "$OLD" ]; then
-            echo "Deleting old branches: $OLD"
-            echo "$OLD" | while read branch; do
-              git push origin --delete "$branch"
-            done
-          fi
-
-      - name: Update .qdjob_version on main
-        if: steps.release.outputs.need_download == 'true'
-        run: |
-          git checkout main
-          CURRENT=$(cat .qdjob_version | tr -d '[:space:]')
-          if [ "$CURRENT" != "${{ steps.release.outputs.tag }}" ]; then
-            echo "${{ steps.release.outputs.tag }}" > .qdjob_version
-            git add .qdjob_version
-            git config user.name "${{ env.GIT_USER }}"
-            git config user.email "${{ env.GIT_EMAIL }}"
-            git commit -m "Update to ${{ steps.release.outputs.tag }}"
-            git push origin main
-          fi
-
-      - name: Ensure main branch
-        if: always() && steps.release.outputs.need_download == 'true'
-        run: |
-          git checkout main 2>/dev/null || true
-          git reset --hard origin/main 2>/dev/null || true
-
-      # ============================================================
-      # Phase 2 — 执行
-      # ============================================================
-
-      - name: Prepare temp directory for execution
-        if: steps.release.outputs.valid == 'true'
-        run: |
-          rm -rf /tmp/qdjob-run
-          mkdir -p /tmp/qdjob-run
-          cp -r /tmp/qdjob/* /tmp/qdjob-run/
-
-      - name: Clone data repository into temp directory
-        if: steps.release.outputs.valid == 'true'
+      - name: Prepare isolated directories and repository access
+        id: paths
         env:
-          DATA_REPO_TOKEN: ${{ secrets.DATA_REPO_TOKEN }}
+          DATA_REPO_SSH_KEY: ${{ secrets.DATA_REPO_SSH_KEY }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          rm -rf /tmp/qdjob-data
-          git clone "https://${DATA_REPO_TOKEN}@github.com/${{ env.DATA_REPO }}.git" /tmp/qdjob-data
-          cp -r /tmp/qdjob-data/* /tmp/qdjob-run/ 2>/dev/null || true
+          set -euo pipefail
+          if [ -z "$DATA_REPO_SSH_KEY" ]; then
+            echo '::error::缺少 DATA_REPO_SSH_KEY，请先完成私有数据仓库授权。'
+            exit 1
+          fi
+          ROOT=$(mktemp -d "$RUNNER_TEMP/qdjob.XXXXXX")
+          mkdir -p "$ROOT/data" "$ROOT/run" "$ROOT/download"
+          printf '%s\n' "$DATA_REPO_SSH_KEY" > "$ROOT/deploy_key"
+          chmod 600 "$ROOT/deploy_key"
+          gh api meta --jq '.ssh_keys[] | "github.com " + .' > "$ROOT/known_hosts"
+          test -s "$ROOT/known_hosts"
+          echo "root=$ROOT" >> "$GITHUB_OUTPUT"
+          echo "GIT_SSH_COMMAND=ssh -i $ROOT/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$ROOT/known_hosts" >> "$GITHUB_ENV"
+
+      - name: Read private configuration repository
+        env:
+          ROOT: ${{ steps.paths.outputs.root }}
+        run: |
+          set -euo pipefail
+          git clone --depth 1 "git@github.com:${DATA_REPO}.git" "$ROOT/data"
+
+      - name: Verify private repository write access without changing data
+        env:
+          ROOT: ${{ steps.paths.outputs.root }}
+        run: |
+          set -euo pipefail
+          git -C "$ROOT/data" push --dry-run origin HEAD
+          echo '私有数据仓库读写连接检查通过。' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Check configuration without revealing credentials
+        id: config
+        env:
+          ROOT: ${{ steps.paths.outputs.root }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+
+          data = Path(os.environ['ROOT']) / 'data'
+          with (data / 'config.json').open(encoding='utf-8-sig') as source:
+              config = json.load(source)
+          users = config.get('users')
+          if not isinstance(users, list):
+              raise SystemExit('config.json 的 users 必须是数组。')
+          if len(users) > 3:
+              raise SystemExit('QDjob 最多支持 3 个账号。')
+          required = ['appId', 'areaId', 'lang', 'mode', 'bar', 'qidth',
+                      'qid', 'ywkey', 'ywguid', 'cmfuToken', 'QDInfo']
+          for number, user in enumerate(users, 1):
+              if not isinstance(user, dict) or not user.get('username'):
+                  raise SystemExit(f'第 {number} 个账号缺少 username。')
+              user_fields = ['username', 'cookies_file', 'tasks', 'user_agent', 'ibex', 'push_services']
+              if any(field not in user for field in user_fields):
+                  raise SystemExit(f'第 {number} 个账号缺少必需配置字段。')
+              if not isinstance(user['tasks'], dict) or not isinstance(user['push_services'], list):
+                  raise SystemExit(f'第 {number} 个账号的任务或推送配置类型错误。')
+              if not (user.get('user_agent') or config.get('default_user_agent')):
+                  raise SystemExit(f'第 {number} 个账号缺少 User-Agent。')
+              if not user.get('ibex'):
+                  raise SystemExit(f'第 {number} 个账号缺少 ibex。')
+              cookie_path = (data / user.get('cookies_file', '')).resolve()
+              if not cookie_path.is_relative_to((data / 'cookies').resolve()):
+                  raise SystemExit(f'第 {number} 个账号的 cookies_file 必须位于 cookies 文件夹。')
+              if not cookie_path.is_file():
+                  raise SystemExit(f'第 {number} 个账号的 Cookies 文件不存在。')
+              with cookie_path.open(encoding='utf-8-sig') as source:
+                  cookies = json.load(source)
+              if not isinstance(cookies, dict) or any(not cookies.get(key) for key in required):
+                  raise SystemExit(f'第 {number} 个账号缺少必需的 Cookies 字段。')
+          ready = bool(users)
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'ready={str(ready).lower()}\n')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:
+              summary.write('私有数据仓库读取成功。\n\n')
+              if ready:
+                  summary.write(f'{len(users)} 个账号的配置结构检查通过；账号有效性需实际运行验证。\n')
+              else:
+                  summary.write('账号配置尚为空。本次仅检查仓库连接，不执行起点任务。\n')
+          PY
+
+      - name: Report validation mode
+        if: github.event_name == 'workflow_dispatch' && inputs.validate_only
+        run: echo '本次为验证模式，不下载或执行 QDjob。' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Random delay for scheduled execution
+        if: github.event_name == 'schedule' && steps.config.outputs.ready == 'true'
+        run: sleep "$((RANDOM % 300))"
+
+      - name: Find latest release
+        id: release
+        if: steps.config.outputs.ready == 'true' && !inputs.validate_only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          RESPONSE=$(gh api "repos/${QDJOB_REPO}/releases/latest")
+          TAG=$(jq -r '.tag_name' <<< "$RESPONSE")
+          ASSET=$(jq -c --arg name "$QDJOB_ASSET" '.assets[] | select(.name == $name)' <<< "$RESPONSE")
+          if [[ ! "$TAG" =~ ^QDjob_v[0-9]+(\.[0-9]+)*$ ]] || [ -z "$ASSET" ]; then
+            echo '::error::未找到可用的 QDjob Linux 发布资源。'
+            exit 1
+          fi
+          URL=$(jq -r '.browser_download_url' <<< "$ASSET")
+          if [[ "$URL" != "https://github.com/${QDJOB_REPO}/releases/download/"* ]]; then
+            echo '::error::发布资源地址不符合预期。'
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "digest=$(jq -r '.digest // empty' <<< "$ASSET")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache release binaries
+        id: cache
+        if: steps.release.outputs.tag != ''
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/qdjob-release
+          key: qdjob-linux-amd64-${{ steps.release.outputs.tag }}
+
+      - name: Download release binaries
+        if: steps.release.outputs.tag != '' && steps.cache.outputs.cache-hit != 'true'
+        env:
+          ROOT: ${{ steps.paths.outputs.root }}
+          DOWNLOAD_URL: ${{ steps.release.outputs.url }}
+          RELEASE_DIGEST: ${{ steps.release.outputs.digest }}
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 --output "$ROOT/download/qdjob.zip" "$DOWNLOAD_URL"
+          if [[ "$RELEASE_DIGEST" == sha256:* ]]; then
+            printf '%s  %s\n' "${RELEASE_DIGEST#sha256:}" "$ROOT/download/qdjob.zip" | sha256sum --check
+          fi
+          mkdir -p "$RUNNER_TEMP/qdjob-release"
+          unzip -q "$ROOT/download/qdjob.zip" -d "$RUNNER_TEMP/qdjob-release"
+          test -f "$RUNNER_TEMP/qdjob-release/QDjob"
+
+      - name: Prepare QDjob execution directory
+        if: steps.release.outputs.tag != ''
+        env:
+          ROOT: ${{ steps.paths.outputs.root }}
+        run: |
+          set -euo pipefail
+          cp -a "$RUNNER_TEMP/qdjob-release/." "$ROOT/run/"
+          for ITEM in config.json cookies devices.json versions.json; do
+            if [ -e "$ROOT/data/$ITEM" ]; then
+              cp -a "$ROOT/data/$ITEM" "$ROOT/run/"
+            fi
+          done
+          chmod +x "$ROOT/run/QDjob"
 
       - name: Run QDjob
-        if: steps.release.outputs.valid == 'true'
-        run: |
-          cd /tmp/qdjob-run
-          ./QDjob > /dev/null 2>&1
-
-      - name: Push logs to data repository
-        if: always()
+        id: execute
+        if: steps.release.outputs.tag != ''
         env:
-          DATA_REPO_TOKEN: ${{ secrets.DATA_REPO_TOKEN }}
+          ROOT: ${{ steps.paths.outputs.root }}
         run: |
-          if [ -d /tmp/qdjob-run/logs ]; then
-            rm -rf /tmp/qdjob-data-push
-            git clone "https://${DATA_REPO_TOKEN}@github.com/${{ env.DATA_REPO }}.git" /tmp/qdjob-data-push
-            cp -r /tmp/qdjob-run/logs /tmp/qdjob-data-push/
-            cd /tmp/qdjob-data-push
-            git config user.name "${{ env.GIT_USER }}"
-            git config user.email "${{ env.GIT_EMAIL }}"
-            git add .
-            git commit -m "Update logs $(date +%Y-%m-%d)" 2>/dev/null || true
-            git push
+          cd "$ROOT/run"
+          ./QDjob > "$ROOT/run-output.log" 2>&1
+
+      - name: Save logs and refreshed configuration privately
+        if: always() && steps.execute.outcome != 'skipped' && steps.release.outputs.tag != ''
+        env:
+          ROOT: ${{ steps.paths.outputs.root }}
+          QDJOB_TAG: ${{ steps.release.outputs.tag }}
+          EXECUTE_OUTCOME: ${{ steps.execute.outcome }}
+        run: |
+          set -euo pipefail
+          git -C "$ROOT/data" pull --ff-only
+          for ITEM in config.json cookies logs; do
+            if [ -e "$ROOT/run/$ITEM" ]; then
+              cp -a "$ROOT/run/$ITEM" "$ROOT/data/"
+            fi
+          done
+          mkdir -p "$ROOT/data/run-logs"
+          if [ -f "$ROOT/run-output.log" ]; then
+            cp "$ROOT/run-output.log" "$ROOT/data/run-logs/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log"
           fi
+          git -C "$ROOT/data" config user.name "$GIT_USER"
+          git -C "$ROOT/data" config user.email "$GIT_EMAIL"
+          git -C "$ROOT/data" add config.json cookies
+          if [ -d "$ROOT/data/logs" ]; then git -C "$ROOT/data" add logs; fi
+          git -C "$ROOT/data" add run-logs
+          if ! git -C "$ROOT/data" diff --cached --quiet; then
+            git -C "$ROOT/data" commit -m "QDjob ${QDJOB_TAG}: $(date +%Y-%m-%d)"
+            git -C "$ROOT/data" push
+          fi
+          echo "QDjob ${QDJOB_TAG} 执行结果：${EXECUTE_OUTCOME}。运行日志已保存到私有数据仓库。" >> "$GITHUB_STEP_SUMMARY"
 
   workflow-keepalive:
     if: github.event_name == 'schedule'
