@@ -43,8 +43,9 @@ jobs:
           fi
           ROOT=$(mktemp -d "$RUNNER_TEMP/qdjob.XXXXXX")
           mkdir -p "$ROOT/data" "$ROOT/run" "$ROOT/download"
-          printf '%s\n' "$DATA_REPO_SSH_KEY" > "$ROOT/deploy_key"
+          printf '%s\n' "$DATA_REPO_SSH_KEY" | tr -d '\r' > "$ROOT/deploy_key"
           chmod 600 "$ROOT/deploy_key"
+          ssh-keygen -y -f "$ROOT/deploy_key" > /dev/null
           gh api meta --jq '.ssh_keys[] | "github.com " + .' > "$ROOT/known_hosts"
           test -s "$ROOT/known_hosts"
           echo "root=$ROOT" >> "$GITHUB_OUTPUT"
