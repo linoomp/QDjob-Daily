@@ -1,116 +1,35 @@
 # QDjob-Daily
 
-QDjob 定时任务方案，每日自动拉取最新 QDjob 程序、获取隐私配置、在临时隔离目录中执行任务并将日志回传。
+本副本已完成 GitHub 端配置；起点账号配置尚为空。
 
-## 工作流程
+- 自动任务仓库：[linoomp/QDjob-Daily](https://github.com/linoomp/QDjob-Daily)
+- 私有配置与日志仓库：[linoomp/QDjob-Data](https://github.com/linoomp/QDjob-Data)
+- 工作流：[QDjob Daily](https://github.com/linoomp/QDjob-Daily/actions/workflows/qdjob-daily.yml)
+- 成功的连接验证：[运行记录](https://github.com/linoomp/QDjob-Daily/actions/runs/37582204534)
 
-```
-每日 08:30 (北京时间)
-   ↓ 随机延迟 0-5 分钟
-拉取 QDjob 最新 Release 并与 .qdjob_version 比较
+## 已配置的运行方式
 
-   ┌─── 新版本 或 版本分支缺失？ ───┐
-   │                                ↓
-   │                    从 Release 下载 QDjob
-   │                    创建版本分支 提交 QDjob 二进制
-   │                    更新 main 的 .qdjob_version
-   │                                │
-   └──────── 版本一致且分支存在 ─────┘
-                    ↓
-           从版本分支 git archive 提取 QDjob
-                    ↓
-          创建临时目录 /tmp/qdjob-run/
-          ├── 放入 QDjob 可执行文件
-          └── 克隆数据仓库并复制数据
-                    ↓
-               执行 QDjob
-                    ↓
-         将生成的 logs/ 推送到数据仓库
+每天北京时间 08:30 调度，随机延迟 0–5 分钟；GitHub 调度可能额外延迟。
+账号为空时只检查配置仓库连接并跳过起点任务。
 
-   ┌─── workflow-keepalive ───┐
-   │ 防止 60 天无提交后       │
-   │ 自动停用定时任务          │
-   └──────────────────────────┘
-```
+工作流从 `qdjob/QDjob` 获取最新 Linux amd64 Release，同版本通过 Actions 缓存复用。
+私有仓库使用专用可读写 Deploy Key 访问，对应私钥已保存为 Actions Secret `DATA_REPO_SSH_KEY`。
 
-## 仓库结构
+程序运行输出保存在私有数据仓库的 `run-logs`，程序日志和刷新后的 `config.json`、`cookies` 也写回该仓库。
 
-```
-QDjob-Daily/
-├── .qdjob_version              # 主分支：当前 QDjob 版本记录
-├── README.md
-└── .github/workflows/
-    └── qdjob-daily.yml         # Action 工作流
+## 补齐起点账号配置
 
-版本分支（如 QDjob_v1.3.6）仅包含：
-  ├── QDjob                     # QDjob 可执行文件
-  ├── QDjob_editor
-  └── ...
+1. 使用 [官方 QDjob 编辑器与使用说明](https://github.com/qdjob/QDjob/blob/main/usage.md) 生成自己的账号配置。
+2. 将 `config.json`、`cookies` 文件夹放入 **私有** `linoomp/QDjob-Data` 仓库根目录；若使用真实设备资料，可一并导入 `devices.json` 和 `versions.json`。
+3. 每个账号需要 User-Agent、ibex 和有效 Cookies，最多支持 3 个账号。
+4. 在 Actions 页面选择 **QDjob Daily → Run workflow**。默认勾选 `validate_only`，只检查连接和配置结构。
+5. 配置结构检查通过后，取消 `validate_only` 手动执行一次，在私有仓库查看日志确认实际任务结果。后续按日自动调度。
 
-运行时临时目录 /tmp/qdjob-run/（不提交）：
-  ├── QDjob                     # QDjob 可执行文件
-  ├── config.json               # 从数据仓库复制来的配置
-  ├── cookies/
-  └── logs/                     # 运行生成的日志 → 推送到数据仓库
-```
+配置结构检查不能证明账号登录仍有效。请把账号配置与 Cookies 保存在私有仓库。
 
-## 快速开始
+更完整的部署说明见 [SETUP.md](SETUP.md)。
 
-### 1. 准备数据仓库
+## 项目来源
 
-创建一个**私有**仓库（如 `QDjob-Data`），将 `config.json` 等配置文件放入根目录：
-
-```
-QDjob-Data/
-├── config.json
-└── cookies/
-    └──...
-```
-
-### 2. Fork 本仓库
-
-```bash
-git clone https://github.com/2061360308/QDjob-Daily.git
-```
-
-### 3. 创建 Fine-grained Personal Access Token
-
-访问 [GitHub Settings → Developer settings → Personal access tokens → Fine-grained tokens](https://github.com/settings/tokens?type=beta)
-
-1. 点击 **Generate new token**
-2. **Repository access** 选择 **Only select repositories**，选中你的私有数据仓库
-3. **Permissions** 设置：
-   - `Contents` → **Read and write**
-4. 生成后复制 token（格式：`github_pat_xxx`）
-
-### 4. 配置 Action Secret
-
-在你的 `QDjob-Daily` 仓库中：
-
-1. **Settings** → **Secrets and variables** → **Actions**
-2. 点击 **New repository secret**
-3. Name: `DATA_REPO_TOKEN`
-4. Secret: 粘贴上一步生成的 token
-5. 点击 **Add secret**
-
-### 5. 修改工作流配置
-
-编辑 `.github/workflows/qdjob-daily.yml`，文件顶部的 `env` 区域集中管理所有可配置项：
-
-```yaml
-env:
-  QDJOB_REPO:        qdjob/QDjob                    # QDjob 发布仓库
-  QDJOB_ASSET:       QDjob_linux_amd64.zip          # 下载的资产文件名
-  DATA_REPO:         2061360308/QDjob-Data          # 改为你的数据仓库
-  GIT_USER:          github-actions[bot]
-  GIT_EMAIL:         github-actions[bot]@users.noreply.github.com
-```
-
-只需将 `DATA_REPO` 改为 `你的用户名/你的数据仓库` 即可，无需在脚本内部修改。
-
-### 6. 触发运行
-
-推送后自动部署，也可以手动触发：
-
-- **自动**：每日北京时间 08:30 自动执行（含随机延迟 0-5 分钟）
-- **手动**：Actions 页面 → QDjob Daily → Run workflow
+- 定时任务方案：[2061360308/QDjob-Daily](https://github.com/2061360308/QDjob-Daily)
+- QDjob 程序：[qdjob/QDjob](https://github.com/qdjob/QDjob)
