@@ -1,8 +1,8 @@
 # QDjob GitHub 端配置
 
-仓库及工作流已部署；账号配置为空，需补齐真实账号配置。
+状态：GitHub 端已部署，工作流已启用，私有数据仓库读写连接验证通过。起点账号配置尚为空。
 
-本地校验：YAML 解析通过，10 段 Bash 脚本语法检查通过，7 个模拟账号配置场景通过。尚未运行远程 GitHub Actions，也未执行真实起点账号任务。
+本地校验：YAML 解析通过，11 段 Bash 脚本语法检查通过，7 个模拟账号配置场景通过。远程验证已成功读取私有数据仓库、通过推送权限检查，并确认空账号跳过任务。尚未执行真实起点账号任务。
 
 ## 部署位置
 
@@ -10,6 +10,8 @@
 - 数据仓库：`linoomp/QDjob-Data`，私有，仅保存账号配置、Cookies 和运行日志。
 - `qdjob-daily.yml` 安装到项目副本的 `.github/workflows/qdjob-daily.yml`。
 - `config.json` 安装到私有数据仓库根目录。初始账号列表为空。
+
+成功验证记录：https://github.com/linoomp/QDjob-Daily/actions/runs/37582204534
 
 ## 运行设置
 
